@@ -1,3 +1,36 @@
+//! A small crate to wrap a `&mut T` so that it can be temporarily sent between threads
+//!
+//! # Warning
+//! Killing the thread that owns the waiter is Undefined Behavior
+//! Dropping the waiter before the associated OwnedMutRef is dropped will abort your program
+//!
+//! - `OwnedMutRef<T>` is a wrapper around a mutable reference that can be safely moved between threads.
+//! - `OwnedMutRefWaiter<T>` allows you to wait (blocking or asynchronously) until the OwnedMutRef has been dropped.
+//!
+//! # Example usage
+//! ```rust
+//! use owned_mut_ref::OwnedMutRef;
+//! use std::sync::mpsc;
+//!
+//! fn main() {
+//!     let mut x = 1;
+//!     let mut_ref = &mut x;
+//!
+//!     let (owned_mut, waiter) = OwnedMutRef::new(mut_ref);
+//!
+//!     let (tx, rx) = mpsc::channel();
+//!     tx.send(owned_mut).unwrap();
+//!     let mut received_owned_mut = rx.recv().unwrap();
+//!     *received_owned_mut += 1;
+//!
+//!     drop(received_owned_mut); // allow the waiter to continue
+//!     waiter.wait();            // must wait before reusing the original value
+//!     // for async code, use `waiter.await`
+//!
+//!     println!("Value is now {}", x);
+//! }
+//! ```
+
 use std::{
     ops::{Deref, DerefMut},
     pin::Pin,
@@ -76,42 +109,6 @@ impl<T: Send> Drop for OwnedMutRef<T> {
 }
 
 impl<T: Send> OwnedMutRef<T> {
-    ///```rust
-    /// use owned_mut_ref::OwnedMutRef;
-    /// use std::sync::mpsc;
-    ///
-    /// fn main() {
-    ///     // WARNING: KILLING THE THREAD THAT OWNS THE MUTABLE REFERENCE IS UB
-    ///
-    ///     // create a mutable reference
-    ///     let mut x = 1;
-    ///     let mut_ref = &mut x;
-    ///
-    ///     // create the owned_mut_ref and the owned_mut_ref_waiter
-    ///     let (owned_mut, waiter) = OwnedMutRef::new(mut_ref);
-    ///
-    ///     // now do wathever you want with your owned_mut_ref
-    ///     // like send it through a channel
-    ///     let (tx, rx) = mpsc::channel();
-    ///     tx.send(owned_mut).unwrap();
-    ///     let mut received_owned_mut = rx.recv().unwrap();
-    ///     // then use it on the other end
-    ///     *received_owned_mut += 1;
-    ///
-    ///     // dropping the received_owned_mut will allow the waiter to continue
-    ///     drop(received_owned_mut);
-    ///
-    ///     // you must wait on the waiter
-    ///     // dropping the waiter before the owned_mut is dropped will std::process:abort
-    ///     waiter.wait();
-    ///     // for async code
-    ///     //waiter.await
-    ///
-    ///     // once you called wait the value is free to be used again
-    ///     println!("{x}");
-    /// }
-    ///```
-
     pub fn new(value: &mut T) -> (Self, OwnedMutRefWaiter<T>) {
         let done = Arc::new((Condvar::new(), Mutex::new((None, false))));
         (
